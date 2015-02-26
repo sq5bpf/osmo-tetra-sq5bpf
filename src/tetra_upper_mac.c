@@ -263,6 +263,16 @@ uint parse_d_sds_data(struct tetra_mac_state *tms, struct msgb *msg, unsigned in
 
 			uint8_t c;
 			switch (protoid) {
+				case TETRA_SDS_PROTO_SIMPLE_LOC:
+					sprintf(tmpstr,"SIMPLE_LOCATION_SYSTEM:[");
+					strcat(descr,tmpstr);
+
+					decode_simplelocsystem(tmpstr2, sizeof(tmpstr2),bits+n,datalen);
+					strcat(descr,tmpstr2);
+					sprintf(tmpstr,"]\n");
+					strcat(descr,tmpstr);
+					break;
+
 				case TETRA_SDS_PROTO_LOCSYSTEM:
 					sprintf(tmpstr,"LOCATION_SYSTEM:[");
 					strcat(descr,tmpstr);
@@ -271,8 +281,6 @@ uint parse_d_sds_data(struct tetra_mac_state *tms, struct msgb *msg, unsigned in
 					strcat(descr,tmpstr2);
 					sprintf(tmpstr,"]\n");
 					strcat(descr,tmpstr);
-
-
 					break;
 
 				case TETRA_SDS_PROTO_LIP:
