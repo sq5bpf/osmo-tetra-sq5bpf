@@ -66,7 +66,7 @@ class my_top_block(gr.top_block):
 
         r = float(sample_rate) / float(new_sample_rate)
 
-        INTERPOLATOR = filter.fractional_interpolator_cc(0, r)
+        INTERPOLATOR = filter.fractional_resampler_cc(0, r)
 
         self.connect(self._u, FILTER, INTERPOLATOR, DEMOD, OUT)
 
