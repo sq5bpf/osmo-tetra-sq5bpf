@@ -17,6 +17,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
+ * 20160203: added crude AFC option --sq5bpf
  */
 
 
@@ -76,19 +77,29 @@ int main(int argc, char **argv)
 	int fd, fd_out, opt;
 
 	int opt_verbose = 0;
+	int do_afc=0;
+	float filter=0;
+	float filter_val=0.0001;
+	int ccounter=0;
 
-	while ((opt = getopt(argc, argv, "v")) != -1) {
+	while ((opt = getopt(argc, argv, "vaf:F:")) != -1) {
 		switch (opt) {
-		case 'v':
-			opt_verbose = 1;
-			break;
-		default:
-			exit(2);
+			case 'v':
+				opt_verbose++;
+				break;
+			case 'a':
+				do_afc=1;
+				break;
+			case 'f':
+				filter_val=atof(optarg);
+				break;
+			default:
+				exit(2);
 		}
 	}
 
 	if (argc <= optind+1) {
-		fprintf(stderr, "Usage: %s [-v] <infile> <outfile>\n", argv[0]);
+		fprintf(stderr, "Usage: %s [-v] [-a] [-f filter_averaging_coefficient] <infile> <outfile>\n", argv[0]);
 		exit(2);
 	}
 
@@ -112,12 +123,20 @@ int main(int argc, char **argv)
 			exit(1);
 		} else if (rc == 0)
 			break;
+#define MAXVAL 5.0 /* this is the maximum value we'll accept for the incoming floats */
+		if ((fl>-MAXVAL)&&(fl<MAXVAL))
+			filter=filter*(1.0-filter_val)+fl*filter_val;
+		if (do_afc) fl=fl-filter;
+
 		rc = process_sym_fl(fl);
 		sym_int2bits(rc, bits);
 		//printf("%2d %1u %1u  %f\n", rc, bits[0], bits[1], fl);
 		if (opt_verbose)
 			printf("%1u%1u", bits[0], bits[1]);
-
+		if ((do_afc)&&(opt_verbose>1)) {
+			ccounter++;
+			if (ccounter>50) { printf(" AFC: %f\n",filter); ccounter=0; }
+		}
 		rc = write(fd_out, bits, 2);
 		if (rc < 0) {
 			perror("write");
