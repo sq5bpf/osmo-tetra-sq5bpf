@@ -64,6 +64,10 @@ static void rx_bcast(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms
 	printf("BNCH SYSINFO (DL %u Hz, UL %u Hz), service_details 0x%04x LA:%u ",
 			dl_freq, ul_freq, sid.mle_si.bs_service_details,sid.mle_si.la);
 	/* sq5bpf */
+
+	tetra_hack_freq_band=sid.freq_band;
+	tetra_hack_freq_offset=sid.freq_offset;
+
 	tetra_hack_dl_freq=dl_freq;
 	tetra_hack_ul_freq=ul_freq;
 	tetra_hack_la=sid.mle_si.la;
@@ -80,11 +84,12 @@ static void rx_bcast(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms
 	memcpy(&tms->last_sid, &sid, sizeof(sid));
 }
 
-const char *tetra_alloc_dump(const struct tetra_chan_alloc_decoded *cad, struct tetra_mac_state *tms)
+const char *tetra_alloc_dump(const struct tetra_chan_alloc_decoded *cad, struct tetra_mac_state *tms, int send_telive_msg)
 {
 	static char buf[64];
 	char *cur = buf;
 	unsigned int freq_band, freq_offset;
+	char freqinfo[128];
 
 	if (cad->ext_carr_pres) {
 		freq_band = cad->ext_carr.freq_band;
@@ -98,7 +103,18 @@ const char *tetra_alloc_dump(const struct tetra_chan_alloc_decoded *cad, struct 
 			tetra_get_alloc_t_name(cad->type), cad->timeslot,
 			tetra_get_ul_dl_name(cad->ul_dl),
 			tetra_dl_carrier_hz(freq_band, cad->carrier_nr, freq_offset));
+	if (send_telive_msg) {
+		switch (cad->ul_dl) {
 
+			case 3: /* uplink + downlink */
+				sprintf(freqinfo,"TETMON_begin FUNC:FREQINFO2 DLF:%i RX:%i TETMON_end",tetra_dl_carrier_hz(freq_band, cad->carrier_nr, freq_offset),tetra_hack_rxid);
+				sendto(tetra_hack_live_socket, (char *)&freqinfo, 128, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
+				break;
+
+			default:
+				break;
+		}
+	}
 	return buf;
 }
 
@@ -108,16 +124,161 @@ int parse_d_release(struct tetra_mac_state *tms, struct msgb *msg, unsigned int 
 	uint8_t *bits = msg->l3h+3;
 	int n=0;
 	int m=0;
+	char tmpstr2[1024];
+	char *nis;
+	int tmpdu_offset;
+	struct tetra_resrc_decoded rsd;
 
+	memset(&rsd, 0, sizeof(rsd));
+	tmpdu_offset = macpdu_decode_resource(&rsd, msg->l1h);
 	/* strona 270 */
 	m=5; uint8_t pdu_type=bits_to_uint(bits+n, m); n=n+m;
 	m=14; uint16_t callident=bits_to_uint(bits+n, m); n=n+m;
-	m=4; uint16_t disccause=bits_to_uint(bits+n, m); n=n+m;
+	m=5; uint16_t disccause=bits_to_uint(bits+n, m); n=n+m;
 	m=6; uint16_t notifindic=bits_to_uint(bits+n, m); n=n+m;
-	printf("\nCall identifier:%i Discconnect cause:%i NotificationID:%i\n",callident,disccause,notifindic);
+	nis=(notifindic<28)?notification_indicator_strings[notifindic]:"Reserved";
+	printf("\nCall identifier:%i Discconnect cause:%i NotificationID:%i (%s)\n",callident,disccause,notifindic,nis);
+	sprintf(tmpstr2,"TETMON_begin FUNC:DRELEASEDEC SSI:%i CID:%i NID:%i [%s] RX:%i TETMON_end",rsd.addr.ssi,callident, notifindic,nis,tetra_hack_rxid);
+	sendto(tetra_hack_live_socket, (char *)&tmpstr2, strlen((char *)&tmpstr2)+1, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
+
+}
+/* sq5bpf */
+int parse_d_connect(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len) {
+	uint8_t *bits = msg->l3h+3;
+	int n=0;
+	int m=0;
+	char *nis;
+	int tmpdu_offset;
+	struct tetra_resrc_decoded rsd;
+	char buf[1024];
+	char buf2[128];
+
+	memset(&rsd, 0, sizeof(rsd));
+	tmpdu_offset = macpdu_decode_resource(&rsd, msg->l1h);
+	/* strona 266 */
+	m=5; uint8_t pdu_type=bits_to_uint(bits+n, m); n=n+m;
+	m=14; uint16_t callident=bits_to_uint(bits+n, m); n=n+m;
+	m=4; uint8_t call_timeout=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t hook_method_sel=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t duplex_sel=bits_to_uint(bits+n, m); n=n+m;
+	m=2; uint8_t tx_grant=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t tx_req_permission=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t call_ownership=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t o_bit=bits_to_uint(bits+n, m); n=n+m;
+	printf("\nCall Identifier:%i Call timeout:%i hook_method:%i Duplex:%i TX_Grant:%i TX_Request_permission:%i Call ownership:%i\n",callident,call_timeout,hook_method_sel,duplex_sel,tx_grant,tx_req_permission,call_ownership);
+	sprintf(buf,"TETMON_begin FUNC:DCONNECTDEC SSI:%i IDX:%i CID:%i CALLOWN:%i",rsd.addr.ssi,rsd.addr.usage_marker,callident,call_ownership);
+	if (o_bit) {
+
+		m=1; uint8_t pbit_callpri=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_callpri) {
+			m=4; uint8_t callpri=bits_to_uint(bits+n, m); n=n+m;
+			printf("Call priority:%i ",callpri);	
+		}
+
+		m=1; uint8_t pbit_bsi=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_bsi) {
+			m=8; uint8_t basic_service_information=bits_to_uint(bits+n, m); n=n+m;
+			printf("Basic service information:%i ", basic_service_information);
+		}
+
+		m=1; uint8_t pbit_tmpaddr=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_tmpaddr) {
+			m=24; uint32_t temp_addr=bits_to_uint(bits+n, m); n=n+m;
+			printf("Temp address:%i ",temp_addr);
+			sprintf(buf2," SSI2:%i",temp_addr);
+			strcat(buf,buf2);
+		}
+
+		m=1; uint8_t pbit_nid=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_nid) {
+			m=6; uint8_t notifindic=bits_to_uint(bits+n, m); n=n+m;
+			nis=(notifindic<28)?notification_indicator_strings[notifindic]:"Reserved";
+			printf("Notification indicator:%i [%s] ",notifindic,nis);
+			sprintf(buf2," NID:%i [%s]",notifindic,nis);
+			strcat(buf,buf2);
+
+		}
+		printf("\n");
+	}
+	sprintf(buf2," RX:%i TETMON_end",tetra_hack_rxid);
+	strcat(buf,buf2);
+	sendto(tetra_hack_live_socket, (char *)&buf, strlen((char *)&buf)+1, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
 
 }
 
+int parse_d_txgranted(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len) {
+	uint8_t *bits = msg->l3h+3;
+	int n=0;
+	int m=0;
+	char *nis;
+	int tmpdu_offset;
+	struct tetra_resrc_decoded rsd;
+	char buf[1024];
+	char buf2[128];
+
+	memset(&rsd, 0, sizeof(rsd));
+	tmpdu_offset = macpdu_decode_resource(&rsd, msg->l1h);
+	/* strona 271 */
+	m=5; uint8_t pdu_type=bits_to_uint(bits+n, m); n=n+m;
+	m=14; uint16_t callident=bits_to_uint(bits+n, m); n=n+m;
+	m=2; uint8_t tx_grant=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t tx_req_permission=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t enc_control=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t reserved=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t o_bit=bits_to_uint(bits+n, m); n=n+m;
+	printf("\nCall Identifier:%i TX_Grant:%i TX_Request_permission:%i Encryption control:%i\n",callident,tx_grant,tx_req_permission,enc_control);
+	sprintf(buf,"TETMON_begin FUNC:DTXGRANTDEC SSI:%i IDX:%i CID:%i TXGRANT:%i TXPERM:%i ENCC:%i",rsd.addr.ssi,rsd.addr.usage_marker,callident,tx_grant,tx_req_permission,enc_control);
+	if (o_bit) {
+		m=1; uint8_t pbit_nid=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_nid) {
+			m=6; uint8_t notifindic=bits_to_uint(bits+n, m); n=n+m;
+			nis=(notifindic<28)?notification_indicator_strings[notifindic]:"Reserved";
+			printf("Notification indicator:%i [%s] ",notifindic,nis);
+			sprintf(buf2," NID:%i [%s]",notifindic,nis);
+			strcat(buf,buf2);
+
+		}
+		m=1; uint8_t pbit_tpti=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_tpti) {
+			m=2; uint8_t tpti=bits_to_uint(bits+n, m); n=n+m;
+			uint32_t txssi;
+			uint32_t txssiext;
+
+			sprintf(buf2," TPTI:%i",tpti);
+			strcat(buf,buf2);
+
+			switch(tpti)
+			{
+				case 0: /* SNA , this isn't defined for D-TX GRANTED */
+					m=8; txssi=bits_to_uint(bits+n, m); n=n+m;
+					sprintf(buf2," SSI2:%i",txssi);
+					strcat(buf,buf2);
+
+					break;
+				case 1: /* SSI */
+					m=24; txssi=bits_to_uint(bits+n, m); n=n+m;
+					sprintf(buf2," SSI2:%i",txssi);
+					strcat(buf,buf2);
+					break;
+				case 2: /* TETRA Subscriber Identity (TSI) */
+					m=24; txssi=bits_to_uint(bits+n, m); n=n+m;
+					m=24; txssiext=bits_to_uint(bits+n, m); n=n+m;
+					sprintf(buf2," SSI2:%i SSIEXT:%i",txssi,txssiext);
+					strcat(buf,buf2);
+					break;
+				case 3: /* reserved ? */
+					break;
+			}
+
+
+		}
+		/* TODO: type 3/4 elements */
+		printf("\n");
+	}
+	sprintf(buf2," RX:%i TETMON_end",tetra_hack_rxid);
+	strcat(buf,buf2);
+	sendto(tetra_hack_live_socket, (char *)&buf, strlen((char *)&buf)+1, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
+}
 
 uint parse_d_setup(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len)
 {
@@ -129,6 +290,10 @@ uint parse_d_setup(struct tetra_mac_state *tms, struct msgb *msg, unsigned int l
 	char tmpstr2[1024];
 	struct tetra_resrc_decoded rsd;
 	int tmpdu_offset;
+	uint16_t notifindic=0;
+	uint32_t tempaddr=0;
+	uint16_t cpti=0;
+
 	memset(&rsd, 0, sizeof(rsd));
 	tmpdu_offset = macpdu_decode_resource(&rsd, msg->l1h);
 
@@ -145,272 +310,193 @@ uint parse_d_setup(struct tetra_mac_state *tms, struct msgb *msg, unsigned int l
 	m=2; uint16_t txgrant=bits_to_uint(bits+n, m); n=n+m;
 	m=1; uint16_t txperm=bits_to_uint(bits+n, m); n=n+m;
 	m=4; uint16_t callprio=bits_to_uint(bits+n, m); n=n+m;
-	m=6; uint16_t notifindic=bits_to_uint(bits+n, m); n=n+m;
-	m=24; uint32_t tempaddr=bits_to_uint(bits+n, m); n=n+m;
-	m=2; uint16_t cpti=bits_to_uint(bits+n, m); n=n+m;
-	switch(cpti)
+	m=1; uint8_t obit=bits_to_uint(bits+n, m); n=n+m;
+	if (obit) 
 	{
-		case 0: /* SNA */
-			m=8; callingssi=bits_to_uint(bits+n, m); n=n+m;
-			break;
-		case 1: /* SSI */
-			m=24; callingssi=bits_to_uint(bits+n, m); n=n+m;
-			break;
-		case 2: /* TETRA Subscriber Identity (TSI) */
-			m=24; callingssi=bits_to_uint(bits+n, m); n=n+m;
-			m=24; callingext=bits_to_uint(bits+n, m); n=n+m;
-			break;
-		case 3: /* reserved ? */
-			break;
+		m=1; uint8_t pbit_notifindic=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_notifindic) {
+			m=6;  notifindic=bits_to_uint(bits+n, m); n=n+m;
+		}
+		m=1; uint8_t pbit_tempaddr=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_tempaddr) {
+			m=24;  tempaddr=bits_to_uint(bits+n, m); n=n+m;
+		}
+		m=1; uint8_t pbit_cpti=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_cpti) {
+			m=2;  cpti=bits_to_uint(bits+n, m); n=n+m;
+			switch(cpti)
+			{
+				case 0: /* SNA */
+					m=8; callingssi=bits_to_uint(bits+n, m); n=n+m;
+					break;
+				case 1: /* SSI */
+					m=24; callingssi=bits_to_uint(bits+n, m); n=n+m;
+					break;
+				case 2: /* TETRA Subscriber Identity (TSI) */
+					m=24; callingssi=bits_to_uint(bits+n, m); n=n+m;
+					m=24; callingext=bits_to_uint(bits+n, m); n=n+m;
+					break;
+				case 3: /* reserved ? */
+					break;
+			}
+		}
+
 	}
-
-
 	printf ("\nCall identifier:%i  Call timeout:%i  Hookmethod:%i  Duplex:%i\n",callident,calltimeout,hookmethod,duplex);
 	printf("Basicinfo:0x%2.2X  Txgrant:%i  TXperm:%i  Callprio:%i\n",basicinfo,txgrant,txperm,callprio);
 	printf("NotificationID:%i  Tempaddr:%i CPTI:%i  CallingSSI:%i  CallingExt:%i\n",notifindic,tempaddr,cpti,callingssi,callingext);
 
-	sprintf(tmpstr2,"TETMON_begin FUNC:DSETUPDEC IDX:%i SSI:%i RX:%i TETMON_end",rsd.addr.usage_marker,tempaddr,tetra_hack_rxid);
+	sprintf(tmpstr2,"TETMON_begin FUNC:DSETUPDEC IDX:%i SSI:%i SSI2:%i CID:%i NID:%i RX:%i TETMON_end",rsd.addr.usage_marker,rsd.addr.ssi,callingssi,callident,notifindic,tetra_hack_rxid);
 	sendto(tetra_hack_live_socket, (char *)&tmpstr2, strlen((char *)&tmpstr2)+1, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
-
 }
 
-uint parse_d_sds_data(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len)
+/* decode 18.5.17 Neighbour cell information for CA */
+/* str 535, przyklad str 1294 */
+int parse_nci_ca( uint8_t *bits)
 {
-	/* strona  269, 297, 1072, 1075 */
-	uint8_t *bits = msg->l3h+3;
+	int n,m;
+	char buf[1024];
+	char buf2[128];
+	char freqinfo[128];
+	n=0;
+	m=5; uint8_t cell_id=bits_to_uint(bits+n, m); n=n+m;
+	m=2; uint8_t cell_reselection=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t neig_cell_synced=bits_to_uint(bits+n, m); n=n+m;
+	m=2; uint8_t cell_load=bits_to_uint(bits+n, m); n=n+m;
+	m=12; uint16_t main_carrier_num=bits_to_uint(bits+n, m); n=n+m;
+	/* the band and offset info is from the sysinfo message, not sure if this is correct */
+	sprintf(buf," NCI:[cell_id:%i cell_resel:%i neigh_synced:%i cell_load:%i carrier:%i %iHz",cell_id,cell_reselection,neig_cell_synced,cell_load,main_carrier_num,tetra_dl_carrier_hz(tetra_hack_freq_band, main_carrier_num, tetra_hack_freq_offset));
 
-	int n=0;
-	int l,a;
-	int m=5;
+	sprintf(freqinfo,"TETMON_begin FUNC:FREQINFO1 DLF:%i",tetra_dl_carrier_hz(tetra_hack_freq_band, main_carrier_num, tetra_hack_freq_offset));
 
-	uint8_t pdu_type;
-	uint8_t cpti;
-	uint32_t calling_ssi;
-	uint32_t calling_ext=0;
-	uint8_t sdti;
-	uint8_t udata[512];
-	uint16_t datalen=0;
-	uint8_t protoid;
-	uint8_t reserved1;
-	uint8_t coding_scheme;
-	char descr[1024];
-	char tmpstr[128];
-	char tmpstr2[1024];
+	m=1; uint8_t obit=bits_to_uint(bits+n, m); n=n+m;
+	if (obit) {
+		m=1; uint8_t pbit_main_carrier_num_ext=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_main_carrier_num_ext) {
+			m=4; uint8_t freq_band=bits_to_uint(bits+n, m); n=n+m;
+			m=2; uint8_t freq_offset=bits_to_uint(bits+n, m); n=n+m;
+			m=3; uint8_t duplex_spacing=bits_to_uint(bits+n, m); n=n+m;
+			m=1; uint8_t reverse=bits_to_uint(bits+n, m); n=n+m;
+			uint32_t dlfext=tetra_dl_carrier_hz(freq_band, main_carrier_num, freq_offset);
+			uint32_t ulfext=tetra_ul_carrier_hz(freq_band, main_carrier_num, freq_offset,duplex_spacing,reverse);
 
-	struct tetra_resrc_decoded rsd;
-	int tmpdu_offset;
-	memset(&rsd, 0, sizeof(rsd));
-	tmpdu_offset = macpdu_decode_resource(&rsd, msg->l1h);
+			sprintf(buf2," band:%i offset:%i freq:%iHz uplink:%iHz (duplex:%i rev:%i)",freq_band,freq_offset,dlfext,ulfext,duplex_spacing,reverse);
+			strcat(buf,buf2);
+			sprintf(buf2,"TETMON_begin FUNC:FREQINFO1 DLF:%i ULF:%i",dlfext, ulfext); 
+			strcat(freqinfo,buf2);
+		}
+		m=1; uint8_t pbit_mcc=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_mcc) {
+			m=10; uint16_t mcc=bits_to_uint(bits+n, m); n=n+m;
+			sprintf(buf2," MCC:%i",mcc);
+			strcat(buf,buf2);
+			sprintf(buf2," MCC:%4.4x",mcc);
+			strcat(freqinfo,buf2);
+		}
 
+		m=1; uint8_t pbit_mnc=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_mnc) {
+			m=14; uint16_t mnc=bits_to_uint(bits+n, m); n=n+m;
+			sprintf(buf2," MNC:%i",mnc);
+			strcat(buf,buf2);
+			sprintf(buf2," MNC:%4.4x",mnc);
+			strcat(freqinfo,buf2);
+		}
 
+		m=1; uint8_t pbit_la=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_la) {
+			m=14; uint16_t la=bits_to_uint(bits+n, m); n=n+m;
+			sprintf(buf2," LA:%i",la);
+			strcat(buf,buf2);
+			strcat(freqinfo,buf2);
+		}
 
-	m=5; pdu_type=bits_to_uint(bits+n, m); n=n+m;
-	m=2; cpti=bits_to_uint(bits+n, m); n=n+m;
-	switch(cpti) {
-		case 1:
-			m=24; calling_ssi=bits_to_uint(bits+n, m); n=n+m;
-			break;
-		case 2:
-			m=24; calling_ssi=bits_to_uint(bits+n, m); n=n+m;
-			m=24; calling_ext=bits_to_uint(bits+n, m); n=n+m;
-			break;
-		default:
-			/* hgw co to jest */
-			printf("\nparse_d_sds_data: ZLY CPTI %i\n",cpti);
-			return(1);
-			break;
+		m=1; uint8_t pbit_max_ms_txpower=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_max_ms_txpower) {
+			m=3; uint8_t max_ms_txpower=bits_to_uint(bits+n, m); n=n+m;
+		}
+
+		m=1; uint8_t pbit_min_rx_level=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_min_rx_level) {
+			m=4; uint8_t min_rx_level=bits_to_uint(bits+n, m); n=n+m;
+		}
+
+		m=1; uint8_t pbit_subscr_class=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_subscr_class) {
+			m=16; uint16_t subscr_class=bits_to_uint(bits+n, m); n=n+m;
+		}
+
+		m=1; uint8_t pbit_bs_srv_details=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_bs_srv_details) {
+			m=12; uint16_t bs_srv_details=bits_to_uint(bits+n, m); n=n+m;
+		}
+
+		m=1; uint8_t pbit_timeshare_info=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_timeshare_info) {
+			m=5; uint8_t timeshare_info=bits_to_uint(bits+n, m); n=n+m;
+		}
+
+		m=1; uint8_t pbit_tdma_frame_offset=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_tdma_frame_offset) {
+			m=6; uint8_t tdma_frame_offset=bits_to_uint(bits+n, m); n=n+m;
+		}
 	}
+	sprintf(buf2,"] ");
+	strcat(buf,buf2);
+	printf("%s",buf);
 
-	sprintf(descr,"CPTI:%i CalledSSI:%i CallingSSI:%i CallingEXT:%i ",cpti,rsd.addr.ssi,calling_ssi,calling_ext);
+	sprintf(buf2," RX:%i TETMON_end",tetra_hack_rxid);
+	strcat(freqinfo,buf2);
+	sendto(tetra_hack_live_socket, (char *)&freqinfo, 128, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
 
-	m=2; sdti=bits_to_uint(bits+n, m); n=n+m;
-
-	switch(sdti) {
-		case 0: /* user defined data-1 16 bit */
-			datalen=2;
-			m=8;
-			for(l=0;l<datalen;l++) {
-				udata[l]=bits_to_uint(bits+n, m); n=n+m;
-			}
-			sprintf(tmpstr," UserData1: 0x%2.2X 0x%2.2X",udata[0],udata[1]);
-			strcat(descr,tmpstr);
-
-			break;
-		case 1: /* user defined data-2 32 bit */
-			datalen=4;
-			m=8;
-			for(l=0;l<datalen;l++) {
-				udata[l]=bits_to_uint(bits+n, m); n=n+m;
-			}
-			sprintf(tmpstr,"UserData2: 0x%2.2X 0x%2.2X 0x%2.2X 0x%2.2X",udata[0],udata[1],udata[2],udata[3]);
-			strcat(descr,tmpstr);
-			break;
-		case 2: /* user defined data-3 64 bit */
-			datalen=8;
-			m=8;
-			for(l=0;l<datalen;l++) {
-				udata[l]=bits_to_uint(bits+n, m); n=n+m;
-
-			}
-			sprintf(tmpstr," UserData3: 0x%2.2X 0x%2.2X 0x%2.2X 0x%2.2X 0x%2.2X 0x%2.2X 0x%2.2X 0x%2.2X",udata[0],udata[1],udata[2],udata[3],udata[4],udata[5],udata[6],udata[7]);
-			strcat(descr,tmpstr);
-			break;
-		case 3: /* length indicator + user defined data-4 bit */
-			m=11; datalen=bits_to_uint(bits+n, m); n=n+m;
-			m=8; protoid=bits_to_uint(bits+n, m); n=n+m; datalen=datalen-m;
-			sprintf(tmpstr," UserData4: len:%i protoid:%2.2X(%s) ",datalen,protoid,get_sds_type(protoid));
-			strcat(descr,tmpstr);
-
-			uint8_t c;
-			switch (protoid) {
-				case TETRA_SDS_PROTO_SIMPLE_LOC:
-					sprintf(tmpstr,"SIMPLE_LOCATION_SYSTEM:[");
-					strcat(descr,tmpstr);
-
-					decode_simplelocsystem(tmpstr2, sizeof(tmpstr2),bits+n,datalen);
-					strcat(descr,tmpstr2);
-					sprintf(tmpstr,"]\n");
-					strcat(descr,tmpstr);
-					break;
-
-				case TETRA_SDS_PROTO_LOCSYSTEM:
-					sprintf(tmpstr,"LOCATION_SYSTEM:[");
-					strcat(descr,tmpstr);
-
-					decode_locsystem(tmpstr2, sizeof(tmpstr2),bits+n,datalen);
-					strcat(descr,tmpstr2);
-					sprintf(tmpstr,"]\n");
-					strcat(descr,tmpstr);
-					break;
-
-				case TETRA_SDS_PROTO_LIP:
-					sprintf(tmpstr,"LIP:[");
-					strcat(descr,tmpstr);
-
-					decode_lip(tmpstr2, sizeof(tmpstr2),bits+n,datalen);
-					strcat(descr,tmpstr2);
-					sprintf(tmpstr,"]");
-					strcat(descr,tmpstr);
-
-
-					break;
-
-				case TETRA_SDS_PROTO_TXTMSG:
-				case TETRA_SDS_PROTO_SIMPLE_TXTMSG:
-				case TETRA_SDS_PROTO_SIMPLE_ITXTMSG:
-				case TETRA_SDS_PROTO_ITXTMSG:
-					m=1; reserved1=bits_to_uint(bits+n, m); n=n+m; datalen=datalen-m;
-					m=7; coding_scheme=bits_to_uint(bits+n, m); n=n+m; datalen=datalen-m;
-					sprintf(tmpstr," coding_scheme:%2.2x ",coding_scheme);
-					strcat(descr,tmpstr);
-
-					sprintf(tmpstr,"DATA:[");
-					strcat(descr,tmpstr);
-
-					/* dump text message */
-					switch(coding_scheme) {
-						case 0: /* 7-bit gsm encoding */
-							sprintf(tmpstr," *7bit* ");
-							strcat(descr,tmpstr);
-							m=8;
-							l=0;
-							while(datalen>=m) {
-								udata[l]=bits_to_uint(bits+n, m); n=n+m;
-								l++;
-								datalen=datalen-m;
-							}
-							/* TODO: maybe skip the first two bytes? i've never seen a 7-bit SDS in the wild --sq5bpf */
-							datalen=decode_pdu(tmpstr2,udata,l);
-							/* dump */
-							for(a=0;a<datalen;a++) {
-								if (isprint(tmpstr2[a])) {
-									sprintf(tmpstr,"%c",tmpstr2[a]);
-								}
-								else {
-									sprintf(tmpstr,"\\x%2.2X",tmpstr2[a]);
-								}
-								strcat(descr,tmpstr);
-
-
-							}
-							strcat(descr,"]");
-
-
-							break;
-						case 0x1A: /* SO/IEC 10646-1 [22] UCS-2/UTF-16BE (16-bit) alphabet */
-							/* TODO: use iconv or whatever else
-							 * for now we'll just use the 8-bit decoding function, 
-							 * every other bit will be written as \x00. ugly but readable --sq5bpf 
-							 */
-
-							sprintf(tmpstr," *UTF16* ");
-							strcat(descr,tmpstr);
-
-						default: /* 8-bit */
-							m=8;
-							l=0;
-							while(datalen>=m) {
-								udata[l]=bits_to_uint(bits+n, m); n=n+m;
-								l++;
-								datalen=datalen-m;
-							}
-							/* TODO: the first two bytes are often garbage. either parse it or skip it 
-							 * i guess i'll have to read the etsi specifications better --sq5bpf */
-
-							for(a=0;a<l;a++) {
-								if (isprint(udata[a])) {
-									sprintf(tmpstr,"%c",udata[a]);
-								}
-								else {
-									sprintf(tmpstr,"\\x%2.2X",udata[a]);
-								}
-								strcat(descr,tmpstr);
-
-
-							}
-							strcat(descr,"]");
-							break;
-					}
-					break;
-
-				default:	
-					sprintf(tmpstr,"DATA:[");
-					strcat(descr,tmpstr);
-					/* other message */
-					/* hexdump */
-					m=8;
-					l=0;
-					while(datalen>=m) {
-						udata[l]=bits_to_uint(bits+n, m); n=n+m;
-						l++;
-						datalen=datalen-m;
-					}
-					/* dump */
-					for(a=0;a<l;a++) {
-						sprintf(tmpstr,"0x%2.2X ",udata[a]);
-						strcat(descr,tmpstr);
-					}
-					strcat(descr,"]");
-					break;
-
-			}	
-
-
-	}
-
-
-
-	printf("%s\n",descr);
-	sprintf(tmpstr2,"TETMON_begin FUNC:SDSDEC [%s] RX:%i TETMON_end",descr,tetra_hack_rxid);
-	sendto(tetra_hack_live_socket, (char *)&tmpstr2, strlen((char *)&tmpstr2)+1, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
-	/*  We'll just ignore these for now :)
-	 *  External subscriber number
-	 *  DM-MS address
-	 */
-
+	return(n);
 }
 
+uint parse_d_nwrk_broadcast(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len)
+{
+	uint8_t *bits = msg->l3h;
+	int n,m,i;
 
+	/* TMLE_PDISC_MLE 3 bits
+	 * TMLE_PDUT_D_NWRK_BROADCAST 3 bits */
+	n=3+3;
+
+	m=16; uint16_t cell_reselect_parms=bits_to_uint(bits+n, m); n=n+m;
+	m=2; uint16_t cell_load=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint16_t optional_elements=bits_to_uint(bits+n, m); n=n+m;
+	printf("\nD_NWRK_BROADCAST:[ cell_reselect:0x%4.4x cell_load:%i", cell_reselect_parms,cell_load);
+	if (optional_elements) {
+		m=1; uint16_t pbit_tetra_time=bits_to_uint(bits+n, m); n=n+m;
+		if (pbit_tetra_time) 
+		{
+			m=24; uint32_t tetra_time_utc=bits_to_uint(bits+n, m); n=n+m;
+			m=1; uint8_t tetra_time_offset_sign=bits_to_uint(bits+n, m); n=n+m;
+			m=6; uint8_t tetra_time_offset=bits_to_uint(bits+n, m); n=n+m;
+			m=6; uint8_t tetra_time_year=bits_to_uint(bits+n, m); n=n+m;
+			m=11; uint16_t tetra_time_reserved=bits_to_uint(bits+n, m); n=n+m; /* must be 0x7ff */
+			printf(" time[secs:%i offset:%c%imin year:%i reserved:0x%4.4x]",tetra_time_utc,tetra_time_offset_sign?'-':'+',tetra_time_offset*15,2000+tetra_time_year,tetra_time_reserved);
+			/* we could decode the time here, but it is not accurate on the networks that i see anyway */
+		}
+
+
+		m=1; uint16_t pbit_neigh_cells=bits_to_uint(bits+n, m); n=n+m;
+
+		//	printf(" pbit_tetra_time:%i pbit_neigh_cells:%i",pbit_tetra_time,pbit_neigh_cells);
+		if (pbit_neigh_cells) 
+		{
+			m=3; uint16_t num_neigh_cells=bits_to_uint(bits+n, m); n=n+m;
+			printf(" num_cells:%i",num_neigh_cells);
+			for (i=0;i<num_neigh_cells;i++) {
+				m=parse_nci_ca(bits+n); n=n+m;
+			}
+
+		}
+
+
+	}
+	printf("] RX:%i\n",tetra_hack_rxid);
+
+}
 
 /* Receive TL-SDU (LLC SDU == MLE PDU) */
 static int rx_tl_sdu(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len)
@@ -433,8 +519,16 @@ static int rx_tl_sdu(struct tetra_mac_state *tms, struct msgb *msg, unsigned int
 					parse_d_setup(tms,msg,len);
 					break;
 
+				case TCMCE_PDU_T_D_CONNECT:
+					parse_d_connect(tms,msg,len);
+					break;
+
 				case TCMCE_PDU_T_D_RELEASE:
 					parse_d_release(tms,msg,len);
+					break;
+
+				case TCMCE_PDU_T_D_TX_GRANTED:
+					parse_d_txgranted(tms,msg,len);
 					break;
 
 				case TCMCE_PDU_T_D_SDS_DATA:
@@ -467,6 +561,14 @@ static int rx_tl_sdu(struct tetra_mac_state *tms, struct msgb *msg, unsigned int
 			break;
 		case TMLE_PDISC_MLE:
 			printf(" %s", tetra_get_mle_pdut_name(bits_to_uint(bits+3, 3), 0));
+			/* parse d-nwrk-broadcast */
+			switch(bits_to_uint(bits+3, 3))
+			{
+				case TMLE_PDUT_D_NWRK_BROADCAST:
+					parse_d_nwrk_broadcast(tms,msg,len);
+				default:
+					break;
+			}
 			break;
 		default:
 			break;
@@ -491,13 +593,155 @@ static int rx_tm_sdu(struct tetra_mac_state *tms, struct msgb *msg, unsigned int
 	return len;
 }
 
-static void rx_resrc(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms)
+/* add bits to a fragment. these should really be bit operations and not stuffing one bit per byte */
+void append_frag_bits(int slot,uint8_t *bits,int bitlen,int fillbits)
+{
+	int i=bitlen;
+	int l=fragslots[slot].length;
+	struct msgb *fragmsgb;
+	uint8_t bit;
+	int zeroes=0;
+
+	fragmsgb= fragslots[slot].msgb;
+
+	while(i) {
+		bit=bits_to_uint(bits, 1);
+		msgb_put_u8(fragmsgb,bit);
+		if (bit) { zeroes=0; } else { zeroes++; }
+		bits++;
+		i--;
+		l++;
+		if (l>4095) { printf("\nFRAG LENGTH ERROR!\n"); return; } /* limit hardcoded for now, the buffer allocated is twice the size just in case */
+	}
+
+	fragslots[slot].length=fragslots[slot].length+bitlen;
+
+	if (fillbits) {
+		fragslots[slot].length=fragslots[slot].length-zeroes;
+		msgb_get(fragmsgb,zeroes);
+	}
+
+	fragslots[slot].fragments++;
+	fragslots[slot].fragtimer=0;
+	/*
+	 * printf("\nappend_frag slot=%i len=%i totallen=%i fillbits=%i\n",slot,bitlen,fragslots[slot].length,fillbits);
+	 * printf("\nFRAGDUMP: %s\n",osmo_ubit_dump((unsigned char *)fragmsgb->l3h,msgb_l3len(fragmsgb)));
+	 */
+
+}
+
+/* MAC-FRAG PDU */
+static void rx_macfrag(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms,int slot)
+{
+	struct msgb *msg = tmvp->oph.msg;
+	struct tetra_resrc_decoded rsd;
+	uint8_t *bits = msg->l1h;
+	int n=0;
+	int m=0;
+
+	memset(&rsd, 0, sizeof(rsd));
+	m=2; uint8_t macpdu_type=bits_to_uint(bits+n, m); n=n+m; /*  MAC-FRAG/END */
+	m=1; uint8_t macpdu_subtype=bits_to_uint(bits+n, m); n=n+m; /* 0 - MAC-FRAG */
+	m=1; uint8_t fillbits_present=bits_to_uint(bits+n, m); n=n+m;
+	int len=msgb_l1len(msg) - n;
+
+	if (fragslots[slot].active) {
+		append_frag_bits(slot,bits+n,len,fillbits_present);
+	} else {
+		printf("\nFRAG: got fragment without start packet for slot=%i\n",slot);
+	}
+}
+
+/* 21.4.3.3 MAC-END PDU page 618 */
+static void rx_macend(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms,int slot)
 {
 	struct msgb *msg = tmvp->oph.msg;
 	struct tetra_resrc_decoded rsd;
 	int tmpdu_offset;
+	uint8_t *bits = msg->l1h;
+	struct msgb *fragmsgb;
+	int n=0;
+	int m=0;
+
+	memset(&rsd, 0, sizeof(rsd));
+
+	m=2; uint8_t macpdu_type=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t macpdu_subtype=bits_to_uint(bits+n, m); n=n+m;
+	m=1; uint8_t fillbits_present=bits_to_uint(bits+n, m); n=n+m;
+	m=6; uint8_t length_indicator=bits_to_uint(bits+n, m); n=n+m;
+	/* FIXME: we should really look at the modulation and handle d8psk and qam */
+	/* m=1; uint8_t napping=bits_to_uint(bits+n, m); n=n+m; // only  in d8psk  and qam */
+	m=1; uint8_t slot_granting=bits_to_uint(bits+n, m); n=n+m;
+	if (slot_granting) {
+		/* m=1; uint8_t multiple=bits_to_uint(bits+n, m); n=n+m; // only  in  qam */
+		m=8; /* basic slot granting */ n=n+m;
+		/* multiple slot granting in qam */
+
+	}
+	m=1; uint8_t chanalloc=bits_to_uint(bits+n, m); n=n+m;
+
+	if (chanalloc) {
+		m=decode_chan_alloc(&rsd.cad, bits+n); n=n+m;
+
+	}
+	int len=msgb_l1len(msg) - n;
+
+	fragmsgb=fragslots[slot].msgb;
+
+	fragslots[slot].fragments++;
+	if (fragslots[slot].active) {
+		append_frag_bits(slot,bits+n,len,fillbits_present);
+
+
+		/* for now filter out just SDS messages to hide the fact that the fragment stuff doesn't work 100% correctly :) */
+		uint8_t *b = fragmsgb->l3h;
+
+		if (b) {
+			uint8_t mle_pdisc = bits_to_uint(b, 3);
+			uint8_t proto=bits_to_uint(b+3, 5);
+			if ((mle_pdisc==TMLE_PDISC_CMCE)&&(proto==TCMCE_PDU_T_D_SDS_DATA)) {
+				printf("\nFRAGMENT DECODE fragments=%i len=%i slot=%i Encr=%i ",fragslots[slot].fragments,fragslots[slot].length,slot,fragslots[slot].encryption);
+				fflush(stdout); /* TODO: remove this in the future, for now leave it so that the printf() is shown if rx_tl_sdu segfaults for somee reason */
+				rx_tl_sdu(tms, fragmsgb, fragslots[slot].length);
+			}
+		}
+		else 
+		{
+			printf("\nFRAG: got end frag without start packet for slot=%i\n",slot);
+		}
+	} else {
+		printf("\nFRAGMENT without l3 header dropped slot=%i\n",slot);
+
+	}
+
+	msgb_reset(fragmsgb);
+	fragslots[slot].fragments=0;
+	fragslots[slot].active=0;
+	fragslots[slot].length=0;
+	fragslots[slot].fragtimer=0;
+}
+
+void hexdump(unsigned char *c,int i)
+{
+	printf("\nHEXDUMP_%i: [",i);
+	while (i) {
+		printf("%2.2x ",(unsigned char)*c);
+		c++;
+		i--;
+		fflush(stdout);
+	}
+	printf ("]\n");
+}
+
+
+static void rx_resrc(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms, int slot)
+{
+	struct msgb *msg = tmvp->oph.msg;
+	struct tetra_resrc_decoded rsd;
+	int tmpdu_offset;
+	struct msgb *fragmsgb;
+	int tmplen;
 	char tmpstr[1380];
-	time_t tp=time(0);
 
 	memset(&rsd, 0, sizeof(rsd));
 	tmpdu_offset = macpdu_decode_resource(&rsd, msg->l1h);
@@ -509,18 +753,68 @@ static void rx_resrc(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms
 
 	if (rsd.addr.type == ADDR_TYPE_NULL)
 		goto out;
-
 	if (rsd.chan_alloc_pres)
-		printf("ChanAlloc=%s ", tetra_alloc_dump(&rsd.cad, tms));
+		printf("ChanAlloc=%s ", tetra_alloc_dump(&rsd.cad, tms,(rsd.encryption_mode==0)));
 	if (rsd.slot_granting.pres)
 		printf("SlotGrant=%u/%u ", rsd.slot_granting.nr_slots,
 				rsd.slot_granting.delay);
 
-	if (rsd.macpdu_length > 0 && rsd.encryption_mode == 0) {
+	if ((tetra_hack_allow_encrypted)||(rsd.encryption_mode == 0)) {
 		int len_bits = rsd.macpdu_length*8;
 		if (msg->l2h + len_bits > msg->l1h + msgb_l1len(msg))
 			len_bits = msgb_l1len(msg) - tmpdu_offset;
-		rx_tm_sdu(tms, msg, len_bits);
+		if (rsd.macpdu_length>0) {
+			rx_tm_sdu(tms, msg, len_bits);
+		} 
+		else 
+		{
+			if ((tetra_hack_reassemble_fragments)&&(rsd.macpdu_length==MACPDU_LEN_START_FRAG)) {
+				int len=msgb_l1len(msg) - tmpdu_offset;
+
+				if (fragslots[slot].active) printf("\nWARNING: leftover fragment slot\n");
+
+				fragmsgb=fragslots[slot].msgb;
+
+				/* printf ("\nFRAGMENT START slot=%i msgb=%p\n",slot,fragmsgb); */
+				msgb_reset(fragmsgb);
+
+				fragslots[slot].active=1;
+				fragslots[slot].fragments=0;
+				/* copy the original msgb */
+				tmplen=msg->tail - msg->data;
+				memcpy(msgb_put(fragmsgb,tmplen),msg->data, tmplen);
+				if (msg->l1h) {
+					fragmsgb->l1h=((void *)msg->l1h-(void *)msg)+(void *)fragmsgb;
+				} else {
+					fragmsgb->l1h=0;
+				}
+				if (msg->l2h) {
+					fragmsgb->l2h=((void *)msg->l2h-(void *)msg)+(void *)fragmsgb;
+				} else {
+					fragmsgb->l2h=0;
+				}
+
+				struct tetra_llc_pdu lpp;
+
+				memset(&lpp, 0, sizeof(lpp));
+				tetra_llc_pdu_parse(&lpp,  (uint8_t *)fragmsgb->l2h,  msgb_l2len(fragmsgb));
+
+				if (lpp.tl_sdu && lpp.ss == 0) {
+					fragmsgb->l3h = lpp.tl_sdu;
+				} else {
+					fragmsgb->l3h = 0;
+				}
+				fragslots[slot].length=lpp.tl_sdu_len; /* not sure if this is the correct way to get the accurate length */
+
+				fragslots[slot].encryption=rsd.encryption_mode;
+
+				fragslots[slot].active=1;
+				fragslots[slot].fragments=1;
+
+				return;
+			}
+
+		}
 	}
 out:
 
@@ -531,7 +825,6 @@ out:
 		uint8_t mle_pdisc=0;
 		uint8_t	req_type=0;
 		uint16_t callident=0;
-		int i;
 
 
 		if (bits) {
@@ -627,6 +920,7 @@ static int rx_tmv_unitdata_ind(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_
 	uint8_t pdu_type = bits_to_uint(msg->l1h, 2);
 	const char *pdu_name;
 	struct msgb *gsmtap_msg;
+	uint8_t pdu_frag_subtype;
 
 	if (tup->lchan == TETRA_LC_BSCH)
 		pdu_name = "SYNC";
@@ -652,6 +946,27 @@ static int rx_tmv_unitdata_ind(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_
 	if (gsmtap_msg)
 		tetra_gsmtap_sendmsg(gsmtap_msg);
 
+	int slot=tup->tdma_time.tn;
+
+	/* age out old fragments */
+	if ((tetra_hack_reassemble_fragments)&&(tup->tdma_time.fn==18)) {
+		int i;
+		for (i=0;i<FRAGSLOT_NR_SLOTS;i++) {
+			if (fragslots[i].active) {
+				fragslots[i].fragtimer++;
+				if (fragslots[i].fragtimer>N203) {
+					printf("\nFRAG: aged out old fragments for slot=%i fragments=%i length=%i timer=%i\n",i,fragslots[i].fragments,fragslots[i].length, fragslots[i].fragtimer);
+					msgb_reset(fragslots[i].msgb);
+					fragslots[i].fragments=0;
+					fragslots[i].active=0;
+					fragslots[i].length=0;
+					fragslots[i].fragtimer=0;
+				}
+
+			}
+		}
+	}
+
 	switch (tup->lchan) {
 		case TETRA_LC_AACH:
 			rx_aach(tmvp, tms);
@@ -664,19 +979,26 @@ static int rx_tmv_unitdata_ind(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_
 					rx_bcast(tmvp, tms);
 					break;
 				case TETRA_PDU_T_MAC_RESOURCE:
-					rx_resrc(tmvp, tms);
+					rx_resrc(tmvp, tms, slot);
 					break;
 				case TETRA_PDU_T_MAC_SUPPL:
 					rx_suppl(tmvp, tms);
 					break;
 				case TETRA_PDU_T_MAC_FRAG_END:
+					pdu_frag_subtype = bits_to_uint(msg->l1h+2, 1);
+
 					if (msg->l1h[3] == TETRA_MAC_FRAGE_FRAG) {
 						printf("FRAG/END FRAG: ");
 						msg->l2h = msg->l1h+4;
-						rx_tm_sdu(tms, msg, 100 /*FIXME*/);
+						if (tetra_hack_reassemble_fragments) {
+							rx_macfrag(tmvp, tms,slot);
+						} else {
+							rx_tm_sdu(tms, msg, 100 /*FIXME*/);
+						}
 						printf("\n");
 					} else
 						printf("FRAG/END END\n");
+					if (tetra_hack_reassemble_fragments) rx_macend(tmvp, tms,slot);
 					break;
 				default:
 					printf("STRANGE pdu=%u\n", pdu_type);

@@ -16,6 +16,11 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
+ *
+ * Changes from the original version (for osmo-tetra-sq5bpf):
+ * - merged float_to_bits code here
+ * - crude pseudo-afc implementation
+ * - set some variables on startup that will later be used to communicate with telive 
  */
 
 #include <stdio.h>
@@ -28,32 +33,137 @@
 
 #include <osmocom/core/utils.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/core/msgb.h>
+#include <osmocom/core/bits.h>
 
 #include "tetra_common.h"
 #include <phy/tetra_burst.h>
 #include <phy/tetra_burst_sync.h>
 #include "tetra_gsmtap.h"
 
-/* sq5bpf */
 #include <netinet/in.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+
 
 void *tetra_tall_ctx;
+
+/* the following was taken from float_to_bits.c (C) 2011 by Harald Welte <laforge@gnumonks.org> --sq5bpf */
+static int process_sym_fl(float fl)
+{
+	int ret;
+
+	/* very simplistic scheme */
+	if (fl > 2)
+		ret = 3;
+	else if (fl > 0)
+		ret = 1;
+	else if (fl < -2)
+		ret = -3;
+	else
+		ret = -1;
+
+	return ret;
+}
+
+static void sym_int2bits(int sym, uint8_t *ret0,uint8_t *ret1)
+{
+	switch (sym) {
+		case -3:
+			*ret0 = 1;
+			*ret1 = 1;
+			break;
+		case 1:
+			*ret0 = 0;
+			*ret1 = 0;
+			break;
+			//case -1:
+		case 3:
+			*ret0 = 0;
+			*ret1 = 1;
+			break;
+			//case 3:
+		case -1:
+			*ret0 = 1;
+			*ret1 = 0;
+			break;
+	}
+}
+
+
+
+void show_help(char *prog)
+{
+	fprintf(stderr, "Usage: %s <-i> <-h> <-r> <-s> <-e> <-f filter_constant> <-a> <file_with_1_byte_per_bit or file_with_floats>\n", prog);
+	fprintf(stderr, "-h - show help\n-i accept float values (internal float_to_bits)\n\n-a turn on pseudo-afc (works only with -i)\n-f pseudo-afc averaging filter constant (default 0.0001)\n");
+	fprintf(stderr, "-s try to display unknown SDS types as text\n-r try to reassemble fragmented PDUs\n");
+	fprintf(stderr, "-e allow parsing of encrypted packets (note: this will return gibberish, because they are ENCRYPTED, it won't break any encryption etc)\n");
+
+}
 
 int main(int argc, char **argv)
 {
 	int fd;
 	struct tetra_rx_state *trs;
 	struct tetra_mac_state *tms;
+	char *tmphost;
+	int opt;
+	int accept_float=0;
+	int do_afc=0;
+	float filter=0;
+	float filter_val=0.0001;
+	float filter_goal=0;
+	int ccounter=0;
+	char tmpstr2[64];
 
-	if (argc < 2) {
-		fprintf(stderr, "Usage: %s <file_with_1_byte_per_bit>\n", argv[0]);
-		exit(1);
+	tetra_hack_reassemble_fragments=0;
+	tetra_hack_all_sds_as_text=0;
+	tetra_hack_allow_encrypted=0;
+
+
+	while ((opt = getopt(argc, argv, "ihf:F:arse")) != -1) {
+
+		switch (opt) {
+			case 'i':
+				accept_float = 1;
+				break;
+			case 'a':
+				do_afc=1;
+				break;
+			case 'f':
+				filter_val=atof(optarg);
+				break;
+			case 'F':
+				filter_goal=atof(optarg);
+				break;
+			case 'r':
+				tetra_hack_reassemble_fragments=1;
+				break;
+			case 's':
+				tetra_hack_all_sds_as_text=1;
+				break;
+			case 'e':
+				tetra_hack_allow_encrypted=1;
+				break;
+			case 'h':
+				show_help(argv[0]);
+				exit(0);
+			default:
+				fprintf(stderr,"Bad option '%c'\n",opt);
+				exit(2);
+		}
 	}
 
-	fd = open(argv[1], O_RDONLY);
+
+	if (argc <= optind) {
+		show_help(argv[0]);
+		exit(2);
+	}
+
+
+	fd = open(argv[optind], O_RDONLY);
 	if (fd < 0) {
 		perror("open");
 		exit(2);
@@ -75,7 +185,12 @@ int main(int argc, char **argv)
 		tetra_hack_socklen=sizeof(struct sockaddr_in);
 		tetra_hack_live_sockaddr.sin_family = AF_INET;
 		tetra_hack_live_sockaddr.sin_port = htons(atoi(getenv("TETRA_HACK_PORT")));
-		inet_aton("127.0.0.1", & tetra_hack_live_sockaddr.sin_addr);
+		tmphost=getenv("TETRA_HACK_IP");
+		if (!tmphost) {
+			tmphost="127.0.0.1";
+		}
+		//inet_aton("127.0.0.1", & tetra_hack_live_sockaddr.sin_addr);
+		inet_aton(tmphost, & tetra_hack_live_sockaddr.sin_addr);
 		if (tetra_hack_live_socket<1) tetra_hack_live_socket=0;
 	}
 
@@ -87,19 +202,79 @@ int main(int argc, char **argv)
 	trs = talloc_zero(tetra_tall_ctx, struct tetra_rx_state);
 	trs->burst_cb_priv = tms;
 
-	while (1) {
-		uint8_t buf[64];
-		int len;
+	/* init the fragment buffers */
+	int k;
+	char desc[]="slot \0";
 
-		len = read(fd, buf, sizeof(buf));
-		if (len < 0) {
-			perror("read");
-			exit(1);
-		} else if (len == 0) {
-			printf("EOF");
-			break;
+	memset((void *)&fragslots,0,sizeof(struct fragslot)*FRAGSLOT_NR_SLOTS); /* clean just in case, shouldn't be needed */
+	for (k=0;k<FRAGSLOT_NR_SLOTS;k++) {
+		desc[4]='0'+k;
+		fragslots[k].msgb=msgb_alloc(8192, desc);
+		/* no idea why this is needed here, but if it's not called early enough, then i get segfaults */
+		msgb_reset(fragslots[k].msgb);
+	}
+
+
+
+#define BUFLEN 64
+#define MAXVAL 5.0
+
+	while (1) {
+		uint8_t buf[BUFLEN];
+		int len;
+		int i;
+		if (accept_float) {
+			int rc;
+			int rc2;
+			float fl[BUFLEN];
+			rc = read(fd, &fl, sizeof(fl));
+			if (rc < 0) {
+				perror("read");
+				exit(1);
+			} else if (rc == 0)
+				break;
+			rc2=rc/sizeof(float);
+			for(i=0;i<rc2;i++) {	
+
+				if ((fl[i]>-MAXVAL)&&(fl[i]<MAXVAL)) 
+					filter=filter*(1.0-filter_val)+(fl[i]-filter_goal)*filter_val;
+				if (do_afc) {
+					rc = process_sym_fl(fl[i]-filter);
+				} else {
+					rc = process_sym_fl(fl[i]);
+				}
+				sym_int2bits(rc, &buf[2*i],&buf[2*i+1]);
+
+			}		
+			len=rc2*2;
+
+		}
+		else
+		{
+			len = read(fd, buf, sizeof(buf));
+			if (len < 0) {
+				perror("read");
+				exit(1);
+			} else if (len == 0) {
+				printf("EOF");
+				break;
+			}
 		}
 		tetra_burst_sync_in(trs, buf, len);
+
+		if (accept_float) {	
+			ccounter++;
+			if (ccounter>50)
+			{
+				fprintf(stderr,"\n### AFC: %f\n",filter);
+
+				sprintf(tmpstr2,"TETMON_begin FUNC:AFCVAL AFC:%i RX:%i TETMON_end",(int) (filter*100.0),tetra_hack_rxid);
+				sendto(tetra_hack_live_socket, (char *)&tmpstr2, strlen((char *)&tmpstr2)+1, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
+
+				ccounter=0;
+			} 
+		}
+
 	}
 
 	talloc_free(trs);

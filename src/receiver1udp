@@ -1,0 +1,39 @@
+#!/bin/bash
+# This is an example how to use simdemod2.py --sq5bpf
+
+#Changelog:
+#20160302: add udp socket option --sq5bpf
+#20151102: see if the fifo exists, and if it is really a fifo --sq5bpf
+
+# you can also set GR_VERSION yourself outside of this script --sq5bpf
+[ "$GR_VERSION" ] || GR_VERSION=`gnuradio-config-info -v|cut -d . -f 1-2|tr -d v`
+case $GR_VERSION in
+	3.6) 
+		GR_DIR=python-3.6
+		;;
+	3.8) 
+		GR_DIR=python-3.7 #hack: haven't tried, but maybe it will work? --sq5bpf 
+		;;
+	3.7) 
+		GR_DIR=python-3.7
+		;;
+	*)		
+		echo "Unsuported gnuradio version $GR_VERSION"
+		exit 1
+		;;
+esac
+
+export TETRA_HACK_PORT=7379 #i might as well have made this a command line parameter, oh well :)
+#export TETRA_HACK_IP=127.0.0.1 #you can send to another host too
+export TETRA_HACK_RXID=$1
+UDP_PORT=$((42000+$1))
+
+
+ulimit -c unlimited
+
+#tetra-rx args: -a turns on pseudo-afc , -i uses an internal float_t_bits
+# -r turns on fragment reassembly, -s tries to dump unknown SDS protocols as text
+#
+#if you have problems with the receiver, then try to remove -a
+socat UDP-RECV:${UDP_PORT} STDOUT | demod/${GR_DIR}/simdemod2.py -o /dev/stdout -i /dev/stdin | ./tetra-rx -a -r -s -i /dev/stdin 
+
