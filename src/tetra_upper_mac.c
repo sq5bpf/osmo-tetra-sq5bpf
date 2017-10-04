@@ -119,6 +119,58 @@ const char *tetra_alloc_dump(const struct tetra_chan_alloc_decoded *cad, struct 
 }
 
 /* sq5bpf */
+int parse_d_status(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len)
+{
+	uint8_t *bits = msg->l3h+3;
+	int n=0;
+	int m=0;
+	char tmpstr2[1024];
+	char *nis;
+	int tmpdu_offset;
+	struct tetra_resrc_decoded rsd;
+
+	memset(&rsd, 0, sizeof(rsd));
+	tmpdu_offset = macpdu_decode_resource(&rsd, msg->l1h);
+	/* strona 269 */
+	m=5; uint8_t pdu_type=bits_to_uint(bits+n, m); n=n+m;
+	uint8_t cpti;
+	uint32_t callingssi;
+	uint32_t callingext=0;
+	m=2;  cpti=bits_to_uint(bits+n, m); n=n+m;
+	switch(cpti)
+	{
+		case 0: /* SNA */
+			m=8; callingssi=bits_to_uint(bits+n, m); n=n+m;
+			break;
+		case 1: /* SSI */
+			m=24; callingssi=bits_to_uint(bits+n, m); n=n+m;
+			break;
+		case 2: /* TETRA Subscriber Identity (TSI) */
+			m=24; callingssi=bits_to_uint(bits+n, m); n=n+m;
+			m=24; callingext=bits_to_uint(bits+n, m); n=n+m;
+			break;
+		case 3: /* reserved ? */
+			break;
+	}
+
+
+
+	m=16; uint16_t precoded_status=bits_to_uint(bits+n, m); n=n+m;
+
+	m=1; uint8_t o_bit=bits_to_uint(bits+n, m); n=n+m;
+
+	if (o_bit) {
+/* TODO: parse optional data */
+	}
+	printf("\nCPTI:%i CalledSSI:%i CallingSSI:%i CallingEXT:%i Status:%i (0x%4.4x)\n",cpti,rsd.addr.ssi,callingssi,callingext,precoded_status);
+
+
+
+	sprintf(tmpstr2,"TETMON_begin FUNC:DSTATUSDEC SSI:%i SSI2:%i STATUS:%i RX:%i TETMON_end",rsd.addr.ssi,callingssi,precoded_status,tetra_hack_rxid);
+	sendto(tetra_hack_live_socket, (char *)&tmpstr2, strlen((char *)&tmpstr2)+1, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
+
+}
+/* sq5bpf */
 int parse_d_release(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len)
 {
 	uint8_t *bits = msg->l3h+3;
@@ -531,7 +583,11 @@ static int rx_tl_sdu(struct tetra_mac_state *tms, struct msgb *msg, unsigned int
 					parse_d_txgranted(tms,msg,len);
 					break;
 
-				case TCMCE_PDU_T_D_SDS_DATA:
+				case TCMCE_PDU_T_D_STATUS:
+					parse_d_status(tms,msg,len);
+					break;
+
+					case TCMCE_PDU_T_D_SDS_DATA:
 					sprintf(tmpstr,"TETMON_begin FUNC:SDS [%s] TETMON_end",osmo_ubit_dump(bits, len));
 					sendto(tetra_hack_live_socket, (char *)&tmpstr, strlen((char *)&tmpstr)+1, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
 					parse_d_sds_data(tms,msg,len);
