@@ -56,22 +56,22 @@ struct tetra_hack_struct {
 	int seen; //czy juz to widzielismy
 };
 
-struct  tetra_hack_struct tetra_hack_db[HACK_NUM_STRUCTS];
+extern struct  tetra_hack_struct tetra_hack_db[HACK_NUM_STRUCTS];
 
 
-int tetra_hack_live_socket;
-struct sockaddr_in tetra_hack_live_sockaddr;
-int tetra_hack_socklen;
+extern int tetra_hack_live_socket;
+extern struct sockaddr_in tetra_hack_live_sockaddr;
+extern int tetra_hack_socklen;
 
-int tetra_hack_live_idx;
-int tetra_hack_live_lastseen;
-int tetra_hack_rxid;
+extern int tetra_hack_live_idx;
+extern int tetra_hack_live_lastseen;
+extern int tetra_hack_rxid;
 
-uint32_t tetra_hack_dl_freq, tetra_hack_ul_freq;
-uint16_t tetra_hack_la;
+extern uint32_t tetra_hack_dl_freq, tetra_hack_ul_freq;
+extern uint16_t tetra_hack_la;
 
-uint8_t  tetra_hack_freq_band;
-uint8_t  tetra_hack_freq_offset;
+extern uint8_t  tetra_hack_freq_band;
+extern uint8_t  tetra_hack_freq_offset;
 
 #define FRAGSLOT_MSGB_SIZE 8192
 #define FRAGSLOT_NR_SLOTS 5
@@ -84,14 +84,14 @@ struct fragslot {
 	int encryption;
 };
 
-struct fragslot fragslots[FRAGSLOT_NR_SLOTS]; /* slots are 1-4 but sometimes  slot==0 */
+extern struct fragslot fragslots[FRAGSLOT_NR_SLOTS]; /* slots are 1-4 but sometimes  slot==0 */
 
 
 #define N203 6  /* see N.203 in the tetra docs, should be 4 or greater */
 
-int tetra_hack_reassemble_fragments;
-int tetra_hack_all_sds_as_text;
-int tetra_hack_allow_encrypted;
+extern int tetra_hack_reassemble_fragments;
+extern int tetra_hack_all_sds_as_text;
+extern int tetra_hack_allow_encrypted;
 
 /* end tetra hack --sq5bpf */
 
