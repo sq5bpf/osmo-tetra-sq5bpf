@@ -45,7 +45,7 @@ case "$PYT" in
 		socat -b 4096 UDP-RECV:${UDP_PORT} STDOUT | demod/${GR_DIR}/simdemod2.py -o /dev/stdout -i /dev/stdin | ./tetra-rx -a -r -s -i /dev/stdin 
 		;;
 	3)
-		socat -b 4096 UDP-RECV:${UDP_PORT} STDOUT | demod/${GR_DIR}/simdemod3_py3.py | ~/tetra/osmo-tetra-sq5bpf/src/tetra-rx -r -s  /dev/stdin
+		socat -b 4096 UDP-RECV:${UDP_PORT} STDOUT | demod/${GR_DIR}/simdemod3_py3.py | ./tetra-rx -r -s  /dev/stdin
 		;;
 	*)
 		echo "Dont know how to handle pythin version [$PYT]" 
