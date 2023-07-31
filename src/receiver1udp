@@ -1,7 +1,8 @@
 #!/bin/bash
-# This is an example how to use simdemod2.py --sq5bpf
+# This is an example how to use simdemod2.py and simdemod3_py3.py --sq5bpf
 
 #Changelog:
+#20230731: added options for gnuradio 3.8 and later and python3 --sq5bpf
 #20160302: add udp socket option --sq5bpf
 #20151102: see if the fifo exists, and if it is really a fifo --sq5bpf
 
@@ -9,13 +10,16 @@
 [ "$GR_VERSION" ] || GR_VERSION=`gnuradio-config-info -v|cut -d . -f 1-2|tr -d v`
 case $GR_VERSION in
 	3.6) 
-		GR_DIR=python-3.6
-		;;
-	3.8) 
-		GR_DIR=python-3.7 #hack: haven't tried, but maybe it will work? --sq5bpf 
+		GR_DIR=gnuradio-3.6
+		PYT=2
 		;;
 	3.7) 
-		GR_DIR=python-3.7
+		GR_DIR=gnuradio-3.7
+		PYT=2
+		;;
+	3.10) 
+		GR_DIR=gnuradio-3.10 #hack: only tried 3.10, but maybe other versions will work to? --sq5bpf
+		PYT=3
 		;;
 	*)		
 		echo "Unsuported gnuradio version $GR_VERSION"
@@ -24,7 +28,7 @@ case $GR_VERSION in
 esac
 
 export TETRA_HACK_PORT=7379 #i might as well have made this a command line parameter, oh well :)
-#export TETRA_HACK_IP=127.0.0.1 #you can send to another host too
+export TETRA_HACK_IP=127.0.0.1 #you can send to another host too
 export TETRA_HACK_RXID=$1
 UDP_PORT=$((42000+$1))
 
@@ -35,5 +39,18 @@ ulimit -c unlimited
 # -r turns on fragment reassembly, -s tries to dump unknown SDS protocols as text
 #
 #if you have problems with the receiver, then try to remove -a
-socat -b 4096 UDP-RECV:${UDP_PORT} STDOUT | demod/${GR_DIR}/simdemod2.py -o /dev/stdout -i /dev/stdin | ./tetra-rx -a -r -s -i /dev/stdin 
+
+case "$PYT" in
+	2)
+		socat -b 4096 UDP-RECV:${UDP_PORT} STDOUT | demod/${GR_DIR}/simdemod2.py -o /dev/stdout -i /dev/stdin | ./tetra-rx -a -r -s -i /dev/stdin 
+		;;
+	3)
+		socat -b 4096 UDP-RECV:${UDP_PORT} STDOUT | demod/${GR_DIR}/simdemod3_py3.py | ~/tetra/osmo-tetra-sq5bpf/src/tetra-rx -r -s  /dev/stdin
+		;;
+	*)
+		echo "Dont know how to handle pythin version [$PYT]" 
+		exit 1
+esac
+
+
 
