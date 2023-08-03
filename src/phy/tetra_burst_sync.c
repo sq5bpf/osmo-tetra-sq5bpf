@@ -31,7 +31,6 @@
 #include <tetra_tdma.h>
 #include <phy/tetra_burst_sync.h>
 
-struct tetra_phy_state t_phy_state;
 
 void tetra_burst_rx_cb(const uint8_t *burst, unsigned int len, enum tetra_train_seq type, void *priv);
 
@@ -113,7 +112,7 @@ int tetra_burst_sync_in(struct tetra_rx_state *trs, uint8_t *bits, unsigned int 
 			/* we have successfully received (at least) one frame */
 			tetra_tdma_time_add_tn(&t_phy_state.time, 1);
 			printf("\nBURST");
-			DEBUGP(": %s", ubit_dump(trs->bitbuf, TETRA_BITS_PER_TS));
+			//DEBUGP(": %s", ubit_dump(trs->bitbuf, TETRA_BITS_PER_TS));
 			printf("\n");
 
 			/* log the burst frames. useful for scanning etc --sq5bpf */

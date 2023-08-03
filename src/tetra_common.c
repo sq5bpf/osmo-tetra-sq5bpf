@@ -129,3 +129,22 @@ void tetra_mac_state_init(struct tetra_mac_state *tms)
 {
 	INIT_LLIST_HEAD(&tms->voice_channels);
 }
+
+struct  tetra_hack_struct tetra_hack_db[HACK_NUM_STRUCTS];
+int tetra_hack_live_socket;
+struct sockaddr_in tetra_hack_live_sockaddr;
+int tetra_hack_socklen;
+int tetra_hack_live_idx;
+int tetra_hack_live_lastseen;
+int tetra_hack_rxid;
+uint32_t tetra_hack_dl_freq, tetra_hack_ul_freq;
+uint16_t tetra_hack_la;
+uint8_t  tetra_hack_freq_band;
+uint8_t  tetra_hack_freq_offset;
+struct fragslot fragslots[FRAGSLOT_NR_SLOTS];
+int tetra_hack_reassemble_fragments;
+int tetra_hack_all_sds_as_text;
+int tetra_hack_allow_encrypted;
+struct tetra_phy_state t_phy_state;
+
+int tetra_hack_reassemble_fragments;
