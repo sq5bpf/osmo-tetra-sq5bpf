@@ -41,12 +41,28 @@
 
 static int rx_tm_sdu(struct tetra_mac_state *tms, struct msgb *msg, unsigned int len);
 
+static int last_encoption;
+static int last_seen_encryption;
+
+void send_encinfo(int send_anyway) {
+	char tmpstr[1024];
+	if ((!send_anyway)&&(tetra_hack_encoption==last_encoption)&&(tetra_hack_seen_encryptions== last_seen_encryption)) return;
+
+	snprintf(tmpstr,sizeof(tmpstr)-1,"TETMON_begin FUNC:ENCINFO1 CRYPT:%i ENC:%2.2x RX:%i TETMON_end",tetra_hack_encoption,tetra_hack_seen_encryptions,tetra_hack_rxid);
+	sendto(tetra_hack_live_socket, (char *)&tmpstr, 128, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
+
+	last_encoption=tetra_hack_encoption;
+	last_seen_encryption=tetra_hack_seen_encryptions;
+}
+
+
 static void rx_bcast(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms)
 {
 	struct msgb *msg = tmvp->oph.msg;
 	struct tetra_si_decoded sid;
 	uint32_t dl_freq, ul_freq;
 	int i;
+	int tmpval;
 
 	memset(&sid, 0, sizeof(sid));
 	macpdu_decode_sysinfo(&sid, msg->l1h);
@@ -63,7 +79,21 @@ static void rx_bcast(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms
 
 	printf("BNCH SYSINFO (DL %u Hz, UL %u Hz), service_details 0x%04x LA:%u ",
 			dl_freq, ul_freq, sid.mle_si.bs_service_details,sid.mle_si.la);
+
+       	/* sometimes we get bogus SYSINFO with sid.mle_si.bs_service_details==0, so instead of finding out why, we'll just ignore it */
+	if (sid.mle_si.bs_service_details==0) return; 
+
 	/* sq5bpf */
+	if ((sid.mle_si.bs_service_details)&&((tetra_hack_freq_band!=sid.freq_band)||
+			(tetra_hack_dl_freq!=dl_freq)||
+			(tetra_hack_ul_freq!=ul_freq)||
+			(sid.freq_offset!=tetra_hack_freq_offset)||
+			(tetra_hack_la!=sid.mle_si.la)))
+	{
+		/* something has changed, maybe the receiver is retuned, so forget old data */
+		tetra_hack_encoption=ENCOPTION_UNKNOWN;
+		tetra_hack_seen_encryptions=0;
+	}
 
 	tetra_hack_freq_band=sid.freq_band;
 	tetra_hack_freq_offset=sid.freq_offset;
@@ -80,6 +110,17 @@ static void rx_bcast(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms
 	for (i = 0; i < 12; i++)
 		printf("\t%s: %u\n", tetra_get_bs_serv_det_name(1 << i),
 				sid.mle_si.bs_service_details & (1 << i) ? 1 : 0);
+
+	if (sid.mle_si.bs_service_details&BS_SERVDET_AIR_ENCR) {
+		tmpval=ENCOPTION_ENABLED;
+	} else {
+		tmpval=ENCOPTION_DISABLED;
+	}
+	if (tetra_hack_encoption!=tmpval) {
+		tetra_hack_seen_encryptions=0;
+	}
+	tetra_hack_encoption=tmpval;
+	send_encinfo(0);
 
 	memcpy(&tms->last_sid, &sid, sizeof(sid));
 }
@@ -797,6 +838,7 @@ static void rx_resrc(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms
 	int tmpdu_offset;
 	struct msgb *fragmsgb;
 	int tmplen;
+	int tmpval;
 	char tmpstr[1380];
 
 	memset(&rsd, 0, sizeof(rsd));
@@ -814,6 +856,10 @@ static void rx_resrc(struct tetra_tmvsap_prim *tmvp, struct tetra_mac_state *tms
 	if (rsd.slot_granting.pres)
 		printf("SlotGrant=%u/%u ", rsd.slot_granting.nr_slots,
 				rsd.slot_granting.delay);
+
+	tmpval=tetra_hack_seen_encryptions;
+	tetra_hack_seen_encryptions|= (1<<rsd.encryption_mode);
+	if (tmpval!=tetra_hack_seen_encryptions) send_encinfo(0);
 
 	if ((tetra_hack_allow_encrypted)||(rsd.encryption_mode == 0)) {
 		int len_bits = rsd.macpdu_length*8;

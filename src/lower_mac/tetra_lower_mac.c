@@ -143,6 +143,7 @@ struct tetra_tmvsap_prim *tmvsap_prim_alloc(uint16_t prim, uint8_t op)
 	return ttp;
 }
 
+
 /* incoming TP-SAP UNITDATA.ind  from PHY into lower MAC */
 void tp_sap_udata_ind(enum tp_sap_data_type type, const uint8_t *bits, unsigned int len, void *priv)
 {
@@ -162,6 +163,9 @@ void tp_sap_udata_ind(enum tp_sap_data_type type, const uint8_t *bits, unsigned 
 
 	struct msgb *msg;
 	unsigned char tmpstr[1380+13]; 
+
+	tetra_hack_packet_counter++;
+	tetra_hack_packet_counter=tetra_hack_packet_counter%65536;
 
 	ttp = tmvsap_prim_alloc(PRIM_TMV_UNITDATA, PRIM_OP_INDICATION);
 	tup = &ttp->u.unitdata;
@@ -249,9 +253,12 @@ void tp_sap_udata_ind(enum tp_sap_data_type type, const uint8_t *bits, unsigned 
 		tup->lchan = TETRA_LC_BSCH;
 		/* send bursts for further processing --sq5bpf */
 
-		snprintf(tmpstr,sizeof(tmpstr)-1,"TETMON_begin FUNC:NETINFO1 CCODE:%2.2x MCC:%4.4x MNC:%4.4x DLF:%i ULF:%i LA:%u RX:%i TETMON_end",tcd->colour_code,tcd->mcc,tcd->mnc,tetra_hack_dl_freq,tetra_hack_ul_freq,tetra_hack_la,tetra_hack_rxid);
+		snprintf(tmpstr,sizeof(tmpstr)-1,"TETMON_begin FUNC:NETINFO1 CCODE:%2.2x MCC:%4.4x MNC:%4.4x DLF:%i ULF:%i LA:%u CRYPT:%i RX:%i TETMON_end",tcd->colour_code,tcd->mcc,tcd->mnc,tetra_hack_dl_freq,tetra_hack_ul_freq,tetra_hack_la,tetra_hack_encoption,tetra_hack_rxid);
 		//sendto(tetra_hack_live_socket, (char *)&tmpstr, strlen(tmpstr), 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
 		sendto(tetra_hack_live_socket, (char *)&tmpstr, 128, 0, (struct sockaddr *)&tetra_hack_live_sockaddr, tetra_hack_socklen);
+
+		if ( (tetra_hack_packet_counter%64)==0) send_encinfo(1); /* send an ENCINFO1 message once in a while */
+
 		//printf("\nSQ5BPF MESSAGE [%s]\n",tmpstr);
 		break;
 	case TPSAP_T_SB2:

@@ -173,6 +173,7 @@ int main(int argc, char **argv)
 	tetra_hack_live_idx=0;
 	tetra_hack_live_lastseen=0;
 	tetra_hack_live_socket=0;
+	tetra_hack_packet_counter=0;
 
 	if (getenv("TETRA_HACK_PORT")) {
 		tetra_hack_rxid=atoi(getenv("TETRA_HACK_RXID"));
@@ -193,6 +194,9 @@ int main(int argc, char **argv)
 		inet_aton(tmphost, & tetra_hack_live_sockaddr.sin_addr);
 		if (tetra_hack_live_socket<1) tetra_hack_live_socket=0;
 	}
+
+	tetra_hack_encoption=ENCOPTION_UNKNOWN;
+	tetra_hack_seen_encryptions=0;
 
 	tetra_gsmtap_init("localhost", 0);
 

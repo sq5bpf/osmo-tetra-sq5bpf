@@ -67,11 +67,20 @@ int tetra_hack_live_idx;
 int tetra_hack_live_lastseen;
 int tetra_hack_rxid;
 
+int tetra_hack_packet_counter; /* counts packets, wraps around on 65536, can be used for periodic actions */
+
 uint32_t tetra_hack_dl_freq, tetra_hack_ul_freq;
 uint16_t tetra_hack_la;
 
 uint8_t  tetra_hack_freq_band;
 uint8_t  tetra_hack_freq_offset;
+
+#define ENCOPTION_UNKNOWN 0
+#define ENCOPTION_DISABLED 1
+#define ENCOPTION_ENABLED 2
+int  tetra_hack_encoption;
+
+uint8_t tetra_hack_seen_encryptions;
 
 #define FRAGSLOT_MSGB_SIZE 8192
 #define FRAGSLOT_NR_SLOTS 5
@@ -92,6 +101,8 @@ struct fragslot fragslots[FRAGSLOT_NR_SLOTS]; /* slots are 1-4 but sometimes  sl
 int tetra_hack_reassemble_fragments;
 int tetra_hack_all_sds_as_text;
 int tetra_hack_allow_encrypted;
+
+void send_encinfo(int send_anyway);
 
 /* end tetra hack --sq5bpf */
 
